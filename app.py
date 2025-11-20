@@ -1,128 +1,127 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
-import geopandas as gpd
+import streamlit as st
 import pandas as pd
 import plotly.express as px
 
+# -------------------------
+# 1. CARGA DE DATOS
+# -------------------------
 
-# In[ ]:
+@st.cache_data
+def load_data():
+    csv_path = "emissions_per_country/annual-co2-emissions-per-country.csv"
+    df = pd.read_csv(csv_path)
 
+    # Renombrar columnas para trabajar más fácil
+    df = df.rename(columns={"Entity": "country", "Code": "code", "Year": "year"})
+    df["code"] = df["code"].str.upper()
 
-# cargar shapefile natural earth
-shp_path = '50m_cultural/ne_50m_admin_0_countries.shp'
-world = gpd.read_file(shp_path)
+    # Filtrar códigos ISO3 válidos
+    df = df[df["code"].str.len() == 3]
 
-# estandarizar columna iso3
-world = world.rename(columns={'ISO_A3': 'code'})
-world['code'] = world['code'].str.upper()
+    # Detectar la columna de emisiones (la que no es country, code ni year)
+    value_col = [c for c in df.columns if c not in ["country", "code", "year"]][0]
+    df = df.rename(columns={value_col: "co2"})
 
-# cargar emisiones
-df = pd.read_csv('emissions_per_country/annual-co2-emissions-per-country.csv')
-df = df.rename(columns={'Entity': 'country', 'Code': 'code', 'Year': 'year'})
-df['code'] = df['code'].str.upper()
-
-# filtrar a códigos iso válidos
-df = df[df['code'].str.len() == 3]
-
-# quedarnos con la columna de emisiones
-value_col = [c for c in df.columns if c not in ['country', 'code', 'year']]
-df = df.rename(columns={value_col[0]: 'co2'})
-df
+    return df
 
 
-# In[ ]:
+df = load_data()
 
+# -------------------------
+# 2. CONFIGURACIÓN DE PÁGINA
+# -------------------------
 
-# maestro de países: una sola fila por code, como base para todos los años
-world_master = (
-    world[['code', 'NAME', 'geometry']]
-    .drop_duplicates(subset=['code'])
-    .rename(columns={'NAME': 'country'})
-    .set_index('code')
+st.set_page_config(
+    page_title="Mapa CO₂ por país (Streamlit Cloud)",
+    layout="wide"
 )
 
-# geojson fijo indexado por code (iso3)
-geojson_world = world_master['geometry'].__geo_interface__
-geojson_world
+st.title("🌍 Emisiones de CO₂ por país")
+st.markdown(
+    """
+    Esta app muestra un **mapa mundial** con las emisiones anuales de CO₂ por país,
+    usando únicamente el archivo CSV (sin GeoPandas ni shapefiles, para que funcione en Streamlit Cloud).
 
+    - Usa el **slider de año** en la barra lateral para cambiar la visualización.  
+    - Los países coloreados tienen datos de emisiones para ese año.  
+    - Los países sin datos quedan con el color de fondo (efecto similar a “gris”).
+    """
+)
 
-# In[ ]:
+# -------------------------
+# 3. SIDEBAR (CONTROLES)
+# -------------------------
 
+st.sidebar.header("Controles")
 
-world_master.crs
+years = sorted(df["year"].unique())
+min_year = int(min(years))
+max_year = int(max(years))
 
+year_selected = st.sidebar.slider(
+    "Selecciona el año",
+    min_value=min_year,
+    max_value=max_year,
+    value=max_year,
+    step=1
+)
 
-# In[ ]:
+st.sidebar.markdown(
+    """
+    **Nota:**  
+    Streamlit Cloud no soporta GeoPandas ni shapefiles.  
+    Por eso, el mapa usa un choropleth de Plotly basado en los códigos ISO3:
 
+    - País coloreado → hay dato de CO₂.  
+    - País sin color → no hay dato en el CSV para ese año.
+    """
+)
 
-def make_co2_map(df_co2, year):
-    # emisiones del año seleccionado, agregadas por país
-    co2_year = (
-        df_co2[df_co2['year'] == year][['code', 'co2']]
-        .groupby('code', as_index=False)
-        .agg({'co2': 'sum'})
-        .set_index('code')
-    )
+# -------------------------
+# 4. FILTRAR DATA POR AÑO
+# -------------------------
 
-    # unir al maestro: aquí nunca se pierden países
-    world_y = world_master.join(co2_year, how='left')
+df_year = df[df["year"] == year_selected]
 
-    # países con dato vs sin dato
-    g_with = world_y[world_y['co2'].notna()].reset_index()
-    g_no = world_y[world_y['co2'].isna()].reset_index()
+if df_year.empty:
+    st.warning(f"No hay datos de CO₂ para el año {year_selected}.")
+else:
+    # -------------------------
+    # 5. MAPA CON PLOTLY
+    # -------------------------
 
-    # capa 1: países con dato → escala continua
     fig = px.choropleth(
-        g_with,
-        geojson=geojson_world,
-        locations='code',            # usa el iso3
-        color='co2',
-        hover_name='country',
-        projection='natural earth',
-        color_continuous_scale='Reds'
+        df_year,
+        locations="code",           # códigos ISO3
+        color="co2",                # variable a colorear
+        hover_name="country",       # nombre que aparece al pasar el mouse
+        color_continuous_scale="OrRd",
+        projection="natural earth",
+        title=f"Emisiones de CO₂ por país — {year_selected}"
     )
 
-    # capa 2: países sin dato → gris, sin leyenda
-    fig_grey = px.choropleth(
-        g_no,
-        geojson=geojson_world,
-        locations='code',
-        color_discrete_sequence=['#d0d0d0'],
-        hover_name='country',
-        projection='natural earth'
-    )
-
-    for trace in fig_grey.data:
-        trace.showlegend = False
-        fig.add_trace(trace)
-
-    fig.update_geos(fitbounds='locations', visible=False)
+    # Ajustes estéticos
     fig.update_layout(
-        title_text=f'CO₂ emissions by country in {year}',
-        title_x=0.5,
-        width=900,
-        height=600
+        margin=dict(l=0, r=0, t=50, b=0),
+        coloraxis_colorbar=dict(
+            title="CO₂",
+            ticks="outside"
+        )
     )
 
-    return fig
+    st.plotly_chart(fig, use_container_width=True)
 
+    # -------------------------
+    # 6. TABLA RESUMEN
+    # -------------------------
 
-# In[ ]:
+    st.subheader("Top 10 países emisores en el año seleccionado")
+    top10 = (
+        df_year[["country", "co2"]]
+        .sort_values("co2", ascending=False)
+        .reset_index(drop=True)
+        .head(10)
+    )
+    st.dataframe(top10)
 
-
-fig_1751 = make_co2_map(df, 1751)
-fig_1751.show()
-
-fig_1851 = make_co2_map(df, 1851)
-fig_1851.show()
-
-fig_1951 = make_co2_map(df, 1951)
-fig_1951.show()
-
-fig_2024 = make_co2_map(df, 2024)
-fig_2024.show()
 
