@@ -8,55 +8,62 @@ import plotly.express as px
 
 @st.cache_data
 def load_data():
-    csv_path = "emissions_per_country/annual-co2-emissions-per-country.csv"
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv("owid-co2-data.csv")
 
-    # Renombrar columnas para trabajar más fácil
-    df = df.rename(columns={"Entity": "country", "Code": "code", "Year": "year"})
-    df["code"] = df["code"].str.upper()
+    # Nos quedamos con columnas clave
+    cols = [
+        "country",
+        "iso_code",
+        "year",
+        "co2",              # emisiones totales (millones de toneladas)
+        "co2_per_capita"    # emisiones per cápita
+    ]
+    df = df[cols]
 
-    # Filtrar códigos ISO3 válidos
-    df = df[df["code"].str.len() == 3]
-
-    # Detectar la columna de emisiones (la que no es country, code ni year)
-    value_col = [c for c in df.columns if c not in ["country", "code", "year"]][0]
-    df = df.rename(columns={value_col: "co2"})
+    # Filtramos solo códigos ISO3 válidos (para el mapa)
+    df = df[df["iso_code"].notna()]
+    df = df[df["iso_code"].str.len() == 3]
 
     return df
 
-
 df = load_data()
 
-# -------------------------
-# 2. CONFIGURACIÓN DE PÁGINA
-# -------------------------
-
-st.set_page_config(
-    page_title="Mapa CO₂ por país (Streamlit Cloud)",
-    layout="wide"
+# Lista de países "normales" (sacamos agregados tipo World)
+country_list = sorted(
+    df[
+        (~df["country"].isin(["World"])) &
+        (df["iso_code"].notna())
+    ]["country"].unique()
 )
 
-st.title("🌍 Emisiones de CO₂ por país")
+# -------------------------
+# 2. CONFIGURACIÓN APP
+# -------------------------
+
+st.set_page_config(page_title="Emisiones de CO₂ — Our World in Data", layout="wide")
+st.title("🌍 Explorador de emisiones de CO₂ (Our World in Data)")
+
 st.markdown(
     """
-    Esta app muestra un **mapa mundial** con las emisiones anuales de CO₂ por país,
-    usando únicamente el archivo CSV (sin GeoPandas ni shapefiles, para que funcione en Streamlit Cloud).
+    Esta app recrea y adapta visualizaciones de  
+    [Our World in Data — CO₂ Emissions](https://ourworldindata.org/co2-emissions).
 
-    - Usa el **slider de año** en la barra lateral para cambiar la visualización.  
-    - Los países coloreados tienen datos de emisiones para ese año.  
-    - Los países sin datos quedan con el color de fondo (efecto similar a “gris”).
+    - Puedes **elegir el año**.
+    - Puedes **seleccionar países**.
+    - Puedes cambiar el **tipo de métrica** (totales vs per cápita).
+    - El **mismo año** controla el mapa, el ranking y la vista de detalle.
     """
 )
 
 # -------------------------
-# 3. SIDEBAR (CONTROLES)
+# 3. SIDEBAR — CONTROLES COMPARTIDOS
 # -------------------------
 
 st.sidebar.header("Controles")
 
-years = sorted(df["year"].unique())
-min_year = int(min(years))
-max_year = int(max(years))
+# 3.1 Año (estado compartido)
+min_year = int(df["year"].min())
+max_year = int(df["year"].max())
 
 year_selected = st.sidebar.slider(
     "Selecciona el año",
@@ -66,62 +73,150 @@ year_selected = st.sidebar.slider(
     step=1
 )
 
-st.sidebar.markdown(
-    """
-    **Nota:**  
-    Streamlit Cloud no soporta GeoPandas ni shapefiles.  
-    Por eso, el mapa usa un choropleth de Plotly basado en los códigos ISO3:
-
-    - País coloreado → hay dato de CO₂.  
-    - País sin color → no hay dato en el CSV para ese año.
-    """
+# 3.2 Países
+countries_selected = st.sidebar.multiselect(
+    "Selecciona uno o más países",
+    options=country_list,
+    default=["Chile", "United States", "China"]
 )
 
+# 3.3 Tipo de métrica / modo de visualización
+metric_label = st.sidebar.selectbox(
+    "Tipo de métrica",
+    options=[
+        "Emisiones totales de CO₂",
+        "Emisiones de CO₂ per cápita"
+    ]
+)
+
+# Mapeo de etiqueta → columna del dataset
+if metric_label == "Emisiones totales de CO₂":
+    metric_col = "co2"
+    metric_units = "millones de toneladas"
+else:
+    metric_col = "co2_per_capita"
+    metric_units = "toneladas por persona"
+
+
 # -------------------------
-# 4. FILTRAR DATA POR AÑO
+# 4. FILTRAR DATA SEGÚN CONTROLES (ESTADO COMPARTIDO)
 # -------------------------
 
+# Filtramos por año (para mapa + ranking)
 df_year = df[df["year"] == year_selected]
 
-if df_year.empty:
-    st.warning(f"No hay datos de CO₂ para el año {year_selected}.")
+# Si el usuario no selecciona países, interpretamos "todos"
+if countries_selected:
+    df_year_countries = df_year[df_year["country"].isin(countries_selected)]
 else:
-    # -------------------------
-    # 5. MAPA CON PLOTLY
-    # -------------------------
+    df_year_countries = df_year.copy()
 
-    fig = px.choropleth(
-        df_year,
-        locations="code",           # códigos ISO3
-        color="co2",                # variable a colorear
-        hover_name="country",       # nombre que aparece al pasar el mouse
-        color_continuous_scale="OrRd",
-        projection="natural earth",
-        title=f"Emisiones de CO₂ por país — {year_selected}"
-    )
+# También creamos un dataset para series de tiempo (solo filtramos países)
+if countries_selected:
+    df_time = df[df["country"].isin(countries_selected)]
+else:
+    df_time = df.copy()
 
-    # Ajustes estéticos
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=50, b=0),
-        coloraxis_colorbar=dict(
-            title="CO₂",
-            ticks="outside"
+# -------------------------
+# 5. LAYOUT PRINCIPAL (TRES GRÁFICOS)
+# -------------------------
+
+col1, col2 = st.columns([2, 1])
+
+# ========= 5.1 MAPA MUNDIAL =========
+with col1:
+    st.subheader(f"Mapa mundial — {metric_label.lower()} ({year_selected})")
+
+    if df_year[metric_col].dropna().empty:
+        st.warning(f"No hay datos de **{metric_label.lower()}** para el año {year_selected}.")
+    else:
+        fig_map = px.choropleth(
+            df_year,
+            locations="iso_code",
+            color=metric_col,
+            hover_name="country",
+            color_continuous_scale="OrRd",
+            projection="natural earth",
+            labels={metric_col: metric_label},
+            title=None
         )
-    )
 
-    st.plotly_chart(fig, use_container_width=True)
+        fig_map.update_layout(
+            margin=dict(l=0, r=0, t=0, b=0),
+            coloraxis_colorbar=dict(
+                title=metric_col,
+                ticks="outside"
+            )
+        )
 
-    # -------------------------
-    # 6. TABLA RESUMEN
-    # -------------------------
+        st.plotly_chart(fig_map, use_container_width=True)
 
-    st.subheader("Top 10 países emisores en el año seleccionado")
-    top10 = (
-        df_year[["country", "co2"]]
-        .sort_values("co2", ascending=False)
-        .reset_index(drop=True)
+# ========= 5.2 RANKING (BARRAS) =========
+with col2:
+    st.subheader(f"Top países — {metric_label.lower()} ({year_selected})")
+
+    df_rank = (
+        df_year_countries[["country", metric_col]]
+        .dropna()
+        .sort_values(metric_col, ascending=False)
         .head(10)
     )
-    st.dataframe(top10)
+
+    if df_rank.empty:
+        st.info("No hay datos para los países seleccionados en este año.")
+    else:
+        fig_bar = px.bar(
+            df_rank,
+            x=metric_col,
+            y="country",
+            orientation="h",
+            labels={
+                "country": "País",
+                metric_col: metric_label
+            }
+        )
+        fig_bar.update_layout(margin=dict(l=0, r=0, t=20, b=20))
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+# ========= 5.3 SERIE DE TIEMPO (MISMO ESTADO COMPARTIDO) =========
+
+st.subheader(f"Evolución temporal — {metric_label.lower()}")
+
+df_time_metric = df_time[df_time[metric_col].notna()]
+
+if df_time_metric.empty:
+    st.info("No hay datos históricos suficientes para la combinación de países y métrica seleccionada.")
+else:
+    fig_line = px.line(
+        df_time_metric,
+        x="year",
+        y=metric_col,
+        color="country",
+        labels={
+            "year": "Año",
+            metric_col: f"{metric_label} ({metric_units})",
+            "country": "País"
+        }
+    )
+
+    # Línea vertical para marcar el año seleccionado (estado compartido)
+    fig_line.add_vline(
+        x=year_selected,
+        line_width=2,
+        line_dash="dash",
+        line_color="gray"
+    )
+
+    fig_line.update_layout(margin=dict(l=0, r=0, t=20, b=0))
+    st.plotly_chart(fig_line, use_container_width=True)
+
+st.markdown(
+    f"""
+    🔄 **Estado compartido:**  
+    - El **año seleccionado ({year_selected})** controla el **mapa** y el **ranking de barras**.  
+    - El **mismo año** se destaca en la **serie temporal** con una línea vertical.  
+    - El **conjunto de países** y el **tipo de métrica** afectan a los **tres gráficos**.
+    """
+)
 
 
