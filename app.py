@@ -218,5 +218,42 @@ st.markdown(
     - El **conjunto de países** y el **tipo de métrica** afectan a los **tres gráficos**.
     """
 )
+with st.expander("Información sobre los datos y decisiones de diseño"):
+    st.markdown(
+    """
+    ### Datasets utilizados
+    - **OWID CO₂ Emissions Dataset**  
+      Tabla con emisiones totales y per cápita por país y año.  
+      Variables: `co2`, `co2_per_capita`, `year`, `iso_code`.  
+      Fuente: Our World in Data.
+
+    ### Unidades y período
+    - **CO₂ total:** millones de toneladas/año  
+    - **CO₂ per cápita:** toneladas por persona/año  
+    - Período aprox.: 1750 al 2022, esto varia según país
+
+    ### Decisiones de diseño
+    **1. Mapa choropleth (color → magnitud)**  
+    Basado en las recomendaciones de la clase:  
+    - Posición = canal más preciso para datos espaciales  
+    - Color secuencial = magnitud (evitamos áreas y ángulos por baja precisión)  
+    - Permite comparar patrones espaciales de emisiones.
+
+    **2. Ranking con barras horizontales**  
+    - Longitud = canal altamente preciso para comparación  
+    - Mejor lectura de nombres de países  
+    - Evita confusión de tonalidades similares.
+
+    **3. Serie temporal alineada con el año elegido**  
+    - Atributo secuencial → posición horizontal  
+    - Mismo año marcado en mapa, barras y serie → estado compartido.
+
+    ### Limitaciones
+    - Países con años sin datos o con series incompletas  
+    - Cambios históricos en fronteras  
+    - Per cápita y totales no son comparables directamente  
+    - Colores no representan exactitud puntual sino rangos  
+    """
+    )
 
 
